@@ -1,11 +1,13 @@
 {
   "domain": "panasonic_smart_china",
   "name": "Panasonic Smart China",
-  "documentation": "https://github.com/mcdona1d/panasonic_smart_china",
+  "documentation": "https://github.com/hamo/panasonic_smart_china#readme",
   "dependencies": [],
-  "codeowners": [],
+  "codeowners": ["@hamo"],
   "requirements": [],
-  "version": "2.1.0",
+  "version": "3.0.0",
   "iot_class": "cloud_polling",
-  "config_flow": true
+  "config_flow": true,
+  "integration_type": "device",
+  "issue_tracker": "https://github.com/hamo/panasonic_smart_china/issues"
 }

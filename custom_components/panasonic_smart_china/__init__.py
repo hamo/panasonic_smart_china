@@ -2,6 +2,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .api import PanasonicApiClient
 from .const import (
@@ -15,7 +16,7 @@ from .const import (
     CONF_USR_ID,
     DOMAIN,
 )
-from .coordinator import PanasonicDeviceCoordinator
+from .coordinator import PanasonicAuxCoordinator, PanasonicDeviceCoordinator
 from .profiles import find_profile_for_device_config, supported_platforms
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,14 +32,24 @@ async def async_setup(hass: HomeAssistant, config: dict):
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {})
     client = PanasonicApiClient(hass, entry.data.get(CONF_SSID))
-    coordinators = _build_coordinators(hass, entry, client)
+    coordinators, aux_coordinators = _build_coordinators(hass, entry, client)
 
     for coordinator in coordinators.values():
         await coordinator.async_config_entry_first_refresh()
 
+    for coordinator in aux_coordinators.values():
+        try:
+            await coordinator.async_config_entry_first_refresh()
+        except UpdateFailed:
+            _LOGGER.warning(
+                "Auxiliary data unavailable for %s; retrying in background.",
+                coordinator.device_id,
+            )
+
     hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
         "coordinators": coordinators,
+        "aux_coordinators": aux_coordinators,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -56,9 +67,13 @@ def _build_coordinators(
     hass: HomeAssistant,
     entry: ConfigEntry,
     client: PanasonicApiClient,
-) -> dict[str, PanasonicDeviceCoordinator]:
+) -> tuple[
+    dict[str, PanasonicDeviceCoordinator],
+    dict[str, PanasonicAuxCoordinator],
+]:
     """Create one coordinator per enabled device under the account entry."""
     coordinators = {}
+    aux_coordinators = {}
     devices = entry.data.get(CONF_DEVICES, {})
 
     for device_id, device_config in devices.items():
@@ -84,4 +99,18 @@ def _build_coordinators(
             device_config.get(CONF_TOKEN),
         )
 
-    return coordinators
+        needs_aux = bool(
+            profile.electricity_sensors or profile.mode_temp_fields
+        )
+        if needs_aux:
+            aux_coordinators[device_id] = PanasonicAuxCoordinator(
+                hass,
+                entry,
+                client,
+                profile,
+                entry.data.get(CONF_USR_ID),
+                device_id,
+                device_config.get(CONF_TOKEN),
+            )
+
+    return coordinators, aux_coordinators

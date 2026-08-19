@@ -186,6 +186,38 @@ class PanasonicApiClient:
             allow_non_json_response=endpoint.allow_non_json_response,
         )
 
+    async def get_device_aux(
+        self,
+        profile: PanasonicProfile,
+        usr_id: str,
+        device_id: str,
+        token: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch results from a read-only auxiliary endpoint.
+
+        Used for electricity stats, per-mode temperature memory and the
+        one-shot timer. Matches the web app request shape (id 100, optional
+        nested ``params``). Returns {} when the results are missing/empty.
+        """
+        payload = {
+            "id": 100,
+            "usrId": usr_id,
+            "deviceId": device_id,
+            "token": token,
+        }
+        if params:
+            payload["params"] = params
+        res = await self._post(
+            f"{BASE_URL}/{path}",
+            payload,
+            headers=self._control_headers(profile, device_id),
+            require_results=False,
+        )
+        results = res.get("results")
+        return results if isinstance(results, dict) else {}
+
     async def _post(
         self,
         url: str,

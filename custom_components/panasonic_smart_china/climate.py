@@ -5,9 +5,6 @@ from homeassistant.components.climate.const import (
     ClimateEntityFeature,
     HVACMode,
     FAN_AUTO,
-    FAN_LOW,
-    FAN_MEDIUM,
-    FAN_HIGH,
 )
 from homeassistant.const import (
     ATTR_TEMPERATURE,
@@ -32,24 +29,16 @@ from .const import (
     DOMAIN,
     FAN_MUTE,
 )
+from .helpers import as_int
 from .models import (
     ENTITY_KIND_BATHROOM_HEATER,
     ENTITY_KIND_DUCTED_AC,
+    ENTITY_KIND_SPLIT_AC,
     PLATFORM_CLIMATE,
 )
 from .profiles import find_profile_for_device_config
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _as_int(value, default=None):
-    """Best-effort int conversion for Panasonic status fields."""
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -89,6 +78,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
             _LOGGER.error("Coordinator not found for %s.", device_id)
             continue
 
+        aux_coordinator = runtime.get("aux_coordinators", {}).get(device_id)
+
         entity_config = {
             **entry.data,
             **device_config,
@@ -101,6 +92,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 entity_config,
                 device_config.get(CONF_DEVICE_NAME, device_id),
                 profile,
+                aux_coordinator=aux_coordinator,
             )
         )
 
@@ -113,13 +105,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class PanasonicBaseEntity(CoordinatorEntity, ClimateEntity):
     """松下设备基类 — 从共享 coordinator 读取状态、发送控制命令"""
 
-    def __init__(self, coordinator, entry, config, name, profile):
+    def __init__(self, coordinator, entry, config, name, profile, aux_coordinator=None):
         super().__init__(coordinator)
         self._hass = coordinator.hass
         self._entry = entry
         self._usr_id = coordinator.usr_id
         self._device_id = coordinator.device_id
         self._token = coordinator.token
+        self._aux_coordinator = aux_coordinator
         self._model = config.get(CONF_DEVICE_MODEL) or config.get(CONF_CONTROLLER_MODEL)
         self._attr_name = name
         self._attr_unique_id = f"panasonic_smart_china_{self._device_id}_climate"
@@ -129,6 +122,8 @@ class PanasonicBaseEntity(CoordinatorEntity, ClimateEntity):
         self._temp_scale = profile.temp_scale
         self._hvac_map = profile.hvac_mapping
         self._default_hvac_mode = profile.default_hvac_mode or HVACMode.COOL
+        self._run_status_on_value = profile.run_status_on_value
+        self._run_status_off_value = profile.run_status_off_value
 
         # 内部状态
         self._is_on = False
@@ -150,7 +145,6 @@ class PanasonicBaseEntity(CoordinatorEntity, ClimateEntity):
             name=self._attr_name,
             manufacturer="Panasonic",
             model=self._model,
-            via_device=(DOMAIN, self._usr_id),
         )
 
     def _handle_coordinator_update(self) -> None:
@@ -266,8 +260,15 @@ class PanasonicBaseEntity(CoordinatorEntity, ClimateEntity):
 class PanasonicACEntity(PanasonicBaseEntity):
     """松下空调实体 — 支持温度设置、风速控制"""
 
-    def __init__(self, coordinator, entry, config, name, profile):
-        super().__init__(coordinator, entry, config, name, profile)
+    def __init__(self, coordinator, entry, config, name, profile, aux_coordinator=None):
+        super().__init__(
+            coordinator,
+            entry,
+            config,
+            name,
+            profile,
+            aux_coordinator=aux_coordinator,
+        )
         self._sensor_id = config.get(CONF_SENSOR_ID)
         self._fan_map = profile.fan_mapping
         self._fan_overrides = profile.fan_payload_overrides
@@ -307,15 +308,15 @@ class PanasonicACEntity(PanasonicBaseEntity):
         return None
 
     def _update_local_state(self, res):
-        self._is_on = (_as_int(res.get('runStatus')) == 1)
+        self._is_on = (as_int(res.get('runStatus')) == self._run_status_on_value)
 
-        p_mode = _as_int(res.get('runMode'))
+        p_mode = as_int(res.get('runMode'))
         for ha_mode, pm in self._hvac_map.items():
             if pm == p_mode:
                 self._hvac_mode = ha_mode
                 break
 
-        raw_temp = _as_int(res.get('setTemperature'))
+        raw_temp = as_int(res.get('setTemperature'))
         if raw_temp is not None:
             target = raw_temp / self._temp_scale
             if self.min_temp <= target <= self.max_temp:
@@ -323,8 +324,8 @@ class PanasonicACEntity(PanasonicBaseEntity):
                 if self._is_on:
                     self._last_active_target_temperature = target
 
-        p_wind = _as_int(res.get('windSet'))
-        p_mute = _as_int(res.get('muteMode'))
+        p_wind = as_int(res.get('windSet'))
+        p_mute = as_int(res.get('muteMode'))
 
         if p_wind == 10 and p_mute == 1:
             self._fan_mode = FAN_MUTE
@@ -341,7 +342,7 @@ class PanasonicACEntity(PanasonicBaseEntity):
     def _build_hvac_command(self, hvac_mode):
         p_mode = self._hvac_map.get(hvac_mode, self._hvac_map[self._default_hvac_mode])
         return {
-            "runStatus": 1,
+            "runStatus": self._run_status_on_value,
             "runMode": p_mode,
             "setTemperature": int(self._last_active_target_temperature * self._temp_scale),
         }
@@ -349,13 +350,56 @@ class PanasonicACEntity(PanasonicBaseEntity):
     def _build_on_command(self):
         hvac_mode = self._hvac_mode if self._hvac_mode != HVACMode.OFF else self._default_hvac_mode
         return {
-            "runStatus": 1,
+            "runStatus": self._run_status_on_value,
             "runMode": self._hvac_map.get(hvac_mode, self._hvac_map[self._default_hvac_mode]),
             "setTemperature": int(self._last_active_target_temperature * self._temp_scale),
         }
 
     def _build_off_command(self):
-        return {"runStatus": 0}
+        return {"runStatus": self._run_status_off_value}
+
+    def _remembered_temperature(self, hvac_mode):
+        """Return the raw remembered setTemperature for a mode switch.
+
+        The official app stores the last used temperature per mode
+        (ACGetModeTempInfo: coldModeTemp/warmModeTemp/wetModeTemp) and
+        restores it when switching modes. Falls back to None when the aux
+        data is unavailable, the mode has no memory entry (auto/fan), or
+        the stored value is out of range.
+        """
+        aux_coordinator = self._aux_coordinator
+        if aux_coordinator is None:
+            return None
+        field = self._profile.mode_temp_fields.get(hvac_mode)
+        if not field:
+            return None
+        aux_data = aux_coordinator.data or {}
+        mode_temp = aux_data.get("mode_temp") or {}
+        raw = mode_temp.get(field)
+        if raw is None:
+            return None
+        try:
+            raw = int(raw)
+        except (TypeError, ValueError):
+            return None
+        min_raw = int(self.min_temp * self._temp_scale)
+        max_raw = int(self.max_temp * self._temp_scale)
+        if min_raw <= raw <= max_raw:
+            return raw
+        return None
+
+    async def async_set_hvac_mode(self, hvac_mode):
+        if hvac_mode == HVACMode.OFF:
+            await self._send_command(self._build_off_command())
+            return
+        if hvac_mode not in self._hvac_map:
+            _LOGGER.warning("Unsupported HVAC mode %s for %s", hvac_mode, self._device_id)
+            return
+        command = self._build_hvac_command(hvac_mode)
+        remembered = self._remembered_temperature(hvac_mode)
+        if remembered is not None:
+            command["setTemperature"] = remembered
+        await self._send_command(command)
 
     def _build_send_payload(self, changes, current_params):
         """空调：Read-Modify-Write + safe_keys 过滤"""
@@ -387,7 +431,11 @@ class PanasonicACEntity(PanasonicBaseEntity):
             if val is None:
                 _LOGGER.warning("Unsupported fan mode %s for %s", fan_mode, self._device_id)
                 return
-            changes = {"windSet": val, "muteMode": 0}
+            changes = {"windSet": val}
+            # muteMode only exists for ducted ACs (fan_payload_overrides);
+            # AirconCommon split units have no mute field.
+            if self._fan_overrides:
+                changes["muteMode"] = 0
         await self._send_command(changes)
 
 
@@ -407,7 +455,7 @@ class PanasonicBathroomHeaterEntity(PanasonicBaseEntity):
         return None
 
     def _update_local_state(self, res):
-        mode_value = _as_int(res.get("runningMode"), 32)
+        mode_value = as_int(res.get("runningMode"), 32)
         self._is_on = mode_value not in (0, 32)
 
         for ha_mode, panasonic_mode in self._hvac_map.items():
@@ -461,5 +509,6 @@ class PanasonicBathroomHeaterEntity(PanasonicBaseEntity):
 
 CLIMATE_ENTITY_CLASSES = {
     ENTITY_KIND_DUCTED_AC: PanasonicACEntity,
+    ENTITY_KIND_SPLIT_AC: PanasonicACEntity,
     ENTITY_KIND_BATHROOM_HEATER: PanasonicBathroomHeaterEntity,
 }

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from ..models import PanasonicProfile
 from .bathroom_heater_0820_fv_rb20vl1 import (
     BATHROOM_HEATER_0820_FV_RB20VL1_PROFILE,
 )
 from .ducted_ac_0900 import DUCTED_AC_0900_PROFILE
+from .split_ac_0900_airconcommon import SPLIT_AC_0900_AIRCONCOMMON_PROFILE
 
 SUPPORTED_PROFILES = {
     DUCTED_AC_0900_PROFILE.profile_id: DUCTED_AC_0900_PROFILE,
+    SPLIT_AC_0900_AIRCONCOMMON_PROFILE.profile_id: SPLIT_AC_0900_AIRCONCOMMON_PROFILE,
     BATHROOM_HEATER_0820_FV_RB20VL1_PROFILE.profile_id: (
         BATHROOM_HEATER_0820_FV_RB20VL1_PROFILE
     ),
@@ -21,11 +21,6 @@ SUPPORTED_CONTROLLERS = {
     profile.controller_model: profile
     for profile in SUPPORTED_PROFILES.values()
 }
-
-
-def iter_supported_profiles() -> Iterable[PanasonicProfile]:
-    """Iterate over all registered verified profiles."""
-    return SUPPORTED_PROFILES.values()
 
 
 def supported_platforms() -> tuple[str, ...]:

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
@@ -42,7 +43,7 @@ from .const import (
     find_controllers_for_category,
     find_controllers_for_device,
 )
-from .models import ENTITY_KIND_DUCTED_AC
+from .models import ENTITY_KIND_DUCTED_AC, ENTITY_KIND_SPLIT_AC
 from .token import DeviceTokenError, generate_device_token
 
 _LOGGER = logging.getLogger(__name__)
@@ -456,7 +457,10 @@ class PanasonicOptionsFlow(config_entries.OptionsFlow):
         current = dict(devices[self._selected_device_id])
 
         if user_input is not None:
-            if current.get(CONF_ENTITY_KIND) == ENTITY_KIND_DUCTED_AC:
+            if current.get(CONF_ENTITY_KIND) in (
+                ENTITY_KIND_DUCTED_AC,
+                ENTITY_KIND_SPLIT_AC,
+            ):
                 current[CONF_SENSOR_ID] = user_input.get(CONF_SENSOR_ID)
             current[CONF_ENABLED] = user_input[CONF_ENABLED]
             devices[self._selected_device_id] = current
@@ -470,14 +474,19 @@ class PanasonicOptionsFlow(config_entries.OptionsFlow):
         schema = {
             vol.Required(CONF_ENABLED, default=current.get(CONF_ENABLED, True)): bool,
         }
-        if current.get(CONF_ENTITY_KIND) == ENTITY_KIND_DUCTED_AC:
+        if current.get(CONF_ENTITY_KIND) in (
+            ENTITY_KIND_DUCTED_AC,
+            ENTITY_KIND_SPLIT_AC,
+        ):
             schema[
                 vol.Optional(
                     CONF_SENSOR_ID,
                     default=current.get(CONF_SENSOR_ID),
                 )
             ] = EntitySelector(
-                EntitySelectorConfig(domain="sensor", device_class="temperature")
+                EntitySelectorConfig(
+                    domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
+                )
             )
 
         return self.async_show_form(

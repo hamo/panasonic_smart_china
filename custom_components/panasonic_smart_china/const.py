@@ -1,29 +1,53 @@
+from homeassistant.const import (
+    CONF_DEVICES,
+    CONF_ENABLED,
+    CONF_TOKEN,
+    CONF_USERNAME,
+)
+
 from .profiles import (
-    SUPPORTED_CONTROLLERS,
     find_profiles_for_category,
     find_profiles_for_device,
 )
-from .profiles.ducted_ac_0900 import FAN_MAX, FAN_MIN, FAN_MUTE
+from .profiles.ducted_ac_0900 import FAN_MUTE
 
 DOMAIN = "panasonic_smart_china"
 
 CONF_USR_ID = "usrId"
-CONF_USERNAME = "username"
 CONF_DEVICE_ID = "deviceId"
-CONF_TOKEN = "token"
 CONF_SSID = "SSID"
 CONF_SENSOR_ID = "sensor_entity_id"
 CONF_CONTROLLER_MODEL = "controller_model"
 CONF_FAMILY_ID = "familyId"
 CONF_REAL_FAMILY_ID = "realFamilyId"
-CONF_DEVICES = "devices"
 CONF_DEVICE_NAME = "deviceName"
 CONF_DEVICE_MODEL = "device_model"
 CONF_CATEGORY = "category"
-CONF_ENABLED = "enabled"
 CONF_PROFILE_ID = "profile_id"
 CONF_HA_PLATFORMS = "ha_platforms"
 CONF_ENTITY_KIND = "entity_kind"
+
+# AirconCommon split-AC fresh-air (ERV) protocol values.
+ERV_MODE_ON = 66  # 'B'
+ERV_MODE_OFF = 64  # '@'
+ERV_TYPE_SUPPORTED = 1
+ERV_WIND_LOW = 1
+ERV_WIND_MEDIUM = 2
+ERV_WIND_HIGH = 3
+ERV_PRESET_LOW = "low"
+ERV_PRESET_MEDIUM = "medium"
+ERV_PRESET_HIGH = "high"
+
+# Auxiliary read-only endpoints used by the AirconCommon split web app.
+ENDPOINT_ELEC_TODAY = "ACGetElectricChargeTodayInfo"
+ENDPOINT_ELEC_MONTH = "ACGetElectricChargeDaylyInfo"
+ENDPOINT_ELEC_YEAR = "ACGetAirconYearGraphInfo"
+ENDPOINT_MODE_TEMP = "ACGetModeTempInfo"
+
+# Filter reset payload values from the official web app (FILTER.ON=1).
+# The per-request beep (buzzer=65) is injected by the coordinator via the
+# profile's command_buzzer, like the App does on every command.
+FILTER_RESET_PAYLOAD = {"filter": 1}
 
 
 def find_controllers_for_category(category_id):

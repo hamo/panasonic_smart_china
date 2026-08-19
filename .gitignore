@@ -4,3 +4,12 @@ script/
 custom_components/.DS_Store
 custom_components/*.zip
 Docs/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Local diagnostic reports (may contain device metadata)
+ac_endpoint_report_*.json
+endpoint_report_*.json
