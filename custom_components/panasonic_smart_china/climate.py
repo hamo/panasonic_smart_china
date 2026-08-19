@@ -1,23 +1,24 @@
 import logging
-from datetime import timedelta
 
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
-    ClimateEntityFeature, 
-    HVACMode, 
-    FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH,
+    ClimateEntityFeature,
+    HVACMode,
+    FAN_AUTO,
+    FAN_LOW,
+    FAN_MEDIUM,
+    FAN_HIGH,
 )
 from homeassistant.const import (
-    ATTR_TEMPERATURE, 
-    STATE_UNAVAILABLE, 
+    ATTR_TEMPERATURE,
+    STATE_UNAVAILABLE,
     STATE_UNKNOWN,
     UnitOfTemperature,
 )
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.update_coordinator import CoordinatorEntity, UpdateFailed
 
-from .api import PanasonicApiAuthError, PanasonicApiClient, PanasonicApiError
 from .const import (
     CONF_CATEGORY,
     CONF_CONTROLLER_MODEL,
@@ -27,9 +28,6 @@ from .const import (
     CONF_DEVICES,
     CONF_ENABLED,
     CONF_SENSOR_ID,
-    CONF_SSID,
-    CONF_TOKEN,
-    CONF_USR_ID,
     CONF_PROFILE_ID,
     DOMAIN,
     FAN_MUTE,
@@ -42,9 +40,6 @@ from .models import (
 from .profiles import find_profile_for_device_config
 
 _LOGGER = logging.getLogger(__name__)
-
-# === 轮询频率 ===
-POLLING_INTERVAL = timedelta(seconds=15)
 
 
 def _as_int(value, default=None):
@@ -60,7 +55,7 @@ def _as_int(value, default=None):
 async def async_setup_entry(hass, entry, async_add_entities):
     """Create climate entities for enabled devices under an account entry."""
     runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-    client = runtime.get("client") or PanasonicApiClient(hass, entry.data.get(CONF_SSID))
+    coordinators = runtime.get("coordinators", {})
     devices = entry.data.get(CONF_DEVICES, {})
 
     entities = []
@@ -89,6 +84,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
             )
             continue
 
+        coordinator = coordinators.get(device_id)
+        if not coordinator:
+            _LOGGER.error("Coordinator not found for %s.", device_id)
+            continue
+
         entity_config = {
             **entry.data,
             **device_config,
@@ -96,32 +96,31 @@ async def async_setup_entry(hass, entry, async_add_entities):
         }
         entities.append(
             entity_class(
-                hass,
+                coordinator,
                 entry,
                 entity_config,
                 device_config.get(CONF_DEVICE_NAME, device_id),
                 profile,
-                client,
             )
         )
 
-    async_add_entities(entities, update_before_add=True)
+    async_add_entities(entities)
 
 
 # ============================================================
 # 基类：所有松下设备共享的逻辑
 # ============================================================
-class PanasonicBaseEntity(ClimateEntity):
-    """松下设备基类 — 包含轮询、状态获取、命令发送等通用逻辑"""
+class PanasonicBaseEntity(CoordinatorEntity, ClimateEntity):
+    """松下设备基类 — 从共享 coordinator 读取状态、发送控制命令"""
 
-    def __init__(self, hass, entry, config, name, profile, client):
-        self._hass = hass
+    def __init__(self, coordinator, entry, config, name, profile):
+        super().__init__(coordinator)
+        self._hass = coordinator.hass
         self._entry = entry
-        self._usr_id = config[CONF_USR_ID]
-        self._device_id = config[CONF_DEVICE_ID]
-        self._token = config[CONF_TOKEN]
+        self._usr_id = coordinator.usr_id
+        self._device_id = coordinator.device_id
+        self._token = coordinator.token
         self._model = config.get(CONF_DEVICE_MODEL) or config.get(CONF_CONTROLLER_MODEL)
-        self._api = client
         self._attr_name = name
         self._attr_unique_id = f"panasonic_smart_china_{self._device_id}_climate"
 
@@ -132,25 +131,17 @@ class PanasonicBaseEntity(ClimateEntity):
         self._default_hvac_mode = profile.default_hvac_mode or HVACMode.COOL
 
         # 内部状态
-        self._available = False
         self._is_on = False
         self._hvac_mode = self._default_hvac_mode
         self._target_temperature = 26.0
         self._last_active_target_temperature = self._target_temperature
         self._last_params = {}
 
-        # 定时器句柄
-        self._unsub_polling = None
-
-    # --- 轮询管理 ---
-
-    @property
-    def should_poll(self):
-        return False
+    # --- 通用属性 ---
 
     @property
     def available(self):
-        return self._available
+        return self.coordinator.last_update_success
 
     @property
     def device_info(self):
@@ -162,23 +153,11 @@ class PanasonicBaseEntity(ClimateEntity):
             via_device=(DOMAIN, self._usr_id),
         )
 
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-        self._unsub_polling = async_track_time_interval(
-            self._hass, self._async_update_interval_wrapper, POLLING_INTERVAL
-        )
-
-    async def async_will_remove_from_hass(self):
-        if self._unsub_polling:
-            self._unsub_polling()
-            self._unsub_polling = None
-        await super().async_will_remove_from_hass()
-
-    async def _async_update_interval_wrapper(self, now):
-        await self.async_update()
-        self.async_write_ha_state()
-
-    # --- 通用属性 ---
+    def _handle_coordinator_update(self) -> None:
+        """Update local state from the latest coordinator data."""
+        self._last_params = dict(self.coordinator.data or {})
+        self._update_local_state(self._last_params)
+        super()._handle_coordinator_update()
 
     @property
     def temperature_unit(self):
@@ -212,46 +191,18 @@ class PanasonicBaseEntity(ClimateEntity):
     def target_temperature(self):
         return self._target_temperature
 
-    # --- 状态获取 ---
-
-    async def async_update(self):
-        await self._fetch_status(update_internal_state=True)
-
-    async def _fetch_status(self, update_internal_state=True):
-        """通用方法：获取设备当前最新状态"""
-        try:
-            res = await self._api.get_device_status(
-                self._profile,
-                self._usr_id,
-                self._device_id,
-                self._token,
-            )
-            self._last_params = res.copy()
-            if update_internal_state:
-                self._available = True
-                self._update_local_state(res)
-            return res
-        except PanasonicApiAuthError as err:
-            self._available = False
-            _LOGGER.error("Panasonic session expired for %s: %s", self._device_id, err)
-            raise ConfigEntryAuthFailed("Panasonic Smart China session expired") from err
-        except PanasonicApiError as err:
-            if update_internal_state:
-                self._available = False
-            _LOGGER.debug("Fetch status failed for %s: %s", self._device_id, err)
-            return None
-
     # --- 命令发送 ---
 
     async def _send_command(self, changes):
-        """Read-Modify-Write 核心逻辑 (子类可覆盖 payload 构建)"""
+        """Read-Modify-Write 核心逻辑 (子类覆盖 payload 构建)"""
 
         # 1. Read
-        latest_params = await self._fetch_status(update_internal_state=False)
+        try:
+            latest_params = await self.coordinator.async_fetch_status()
+        except ConfigEntryAuthFailed:
+            return
 
-        if latest_params:
-            current_params = latest_params.copy()
-        else:
+        if not latest_params:
             _LOGGER.warning(
                 "Could not fetch latest status for %s; aborting command %s.",
                 self._device_id,
@@ -260,32 +211,14 @@ class PanasonicBaseEntity(ClimateEntity):
             return
 
         # 2. Build payload (委托给子类)
-        params = self._build_send_payload(changes, current_params)
+        params = self._build_send_payload(changes, latest_params)
 
-        # 3. Write
+        # 3. Write (coordinator 成功后做乐观更新并刷新实体状态)
         try:
-            await self._api.set_device_status(
-                self._profile,
-                self._usr_id,
-                self._device_id,
-                self._token,
-                params,
-            )
-        except PanasonicApiAuthError as err:
-            self._available = False
-            _LOGGER.error("Panasonic session expired while setting %s: %s", self._device_id, err)
-            raise ConfigEntryAuthFailed("Panasonic Smart China session expired") from err
-        except PanasonicApiError as err:
+            await self.coordinator.async_send_command(params)
+        except (ConfigEntryAuthFailed, UpdateFailed) as err:
             _LOGGER.error("Set failed for %s: %s", self._device_id, err)
             return
-
-        # 4. 仅在服务端接受指令后更新本地状态
-        self._available = True
-        self._last_params.update(params)
-        self._update_local_state(self._last_params)
-
-        # 5. 强制通知 HA 刷新界面
-        self.async_write_ha_state()
 
     # --- 子类必须实现的方法 ---
 
@@ -333,8 +266,8 @@ class PanasonicBaseEntity(ClimateEntity):
 class PanasonicACEntity(PanasonicBaseEntity):
     """松下空调实体 — 支持温度设置、风速控制"""
 
-    def __init__(self, hass, entry, config, name, profile, client):
-        super().__init__(hass, entry, config, name, profile, client)
+    def __init__(self, coordinator, entry, config, name, profile):
+        super().__init__(coordinator, entry, config, name, profile)
         self._sensor_id = config.get(CONF_SENSOR_ID)
         self._fan_map = profile.fan_mapping
         self._fan_overrides = profile.fan_payload_overrides

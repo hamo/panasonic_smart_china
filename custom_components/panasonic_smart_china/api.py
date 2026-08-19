@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .models import PanasonicEndpoint, PanasonicProfile
+from .tls import psmartcloud_fingerprint
 
 BASE_URL = "https://app.psmartcloud.com/App"
 URL_LOGIN = f"{BASE_URL}/UsrLogin"
@@ -197,7 +198,9 @@ class PanasonicApiClient:
         session = async_get_clientsession(self._hass)
         try:
             async with async_timeout.timeout(10):
-                response = await session.post(url, json=payload, headers=headers, ssl=False)
+                response = await session.post(
+                    url, json=payload, headers=headers, ssl=psmartcloud_fingerprint()
+                )
                 if response.status != 200:
                     text = await response.text()
                     raise PanasonicApiResponseError(
